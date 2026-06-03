@@ -10,6 +10,7 @@ import com.cryptopulse.wallet.domain.WalletBalance;
 import com.cryptopulse.wallet.dto.CancelOrderResponse;
 import com.cryptopulse.wallet.dto.CreateUserRequest;
 import com.cryptopulse.wallet.dto.CreateUserResponse;
+import com.cryptopulse.wallet.dto.ExecutedOrderResponse;
 import com.cryptopulse.wallet.dto.PendingOrderResponse;
 import com.cryptopulse.wallet.dto.ReserveOrderRequest;
 import com.cryptopulse.wallet.dto.ReserveOrderResponse;
@@ -160,6 +161,15 @@ public class WalletService {
         return balanceAuditRecordRepository.findAllByStatusOrderByCreatedAtAsc(OrderReservationStatus.RESERVED)
                 .stream()
                 .map(this::toPendingOrderResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<ExecutedOrderResponse> getExecutionHistory(Long userId) {
+        ensureUserExists(userId);
+        return processedExecutionRecordRepository.findAllByUserIdOrderByProcessedAtDesc(userId)
+                .stream()
+                .map(this::toExecutedOrderResponse)
                 .toList();
     }
 
@@ -322,7 +332,7 @@ public class WalletService {
                 WalletBalance usdBalance = findOrCreateBalanceForUpdate(userId, USD_CURRENCY);
                 usdBalance.credit(refund);
             }
-            processedExecutionRecordRepository.save(new ProcessedExecutionRecord(event.orderId(), userId, processedAt));
+            processedExecutionRecordRepository.save(buildProcessedExecutionRecord(event, userId, processedAt));
             markReservationExecuted(reservation, processedAt);
             return;
         }
@@ -331,7 +341,7 @@ public class WalletService {
             WalletBalance usdBalance = findOrCreateBalanceForUpdate(userId, USD_CURRENCY);
             BigDecimal proceeds = event.totalCost().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
             usdBalance.credit(proceeds);
-            processedExecutionRecordRepository.save(new ProcessedExecutionRecord(event.orderId(), userId, processedAt));
+            processedExecutionRecordRepository.save(buildProcessedExecutionRecord(event, userId, processedAt));
             markReservationExecuted(reservation, processedAt);
             return;
         }
@@ -430,6 +440,109 @@ public class WalletService {
                 record.getTargetPrice(),
                 record.getCreatedAt()
         );
+    }
+
+    private ExecutedOrderResponse toExecutedOrderResponse(ProcessedExecutionRecord record) {
+        BalanceAuditRecord reservation = balanceAuditRecordRepository.findByEventId(record.getOrderId())
+                .orElse(null);
+
+        String ticker = firstNonBlank(record.getTicker(), reservation == null ? null : reservation.getTargetTicker());
+        String side = firstNonBlank(record.getSide(), reservation == null || reservation.getSide() == null
+                ? null
+                : reservation.getSide().name());
+        BigDecimal quantity = resolveExecutedQuantity(record, reservation, side);
+        BigDecimal executionPrice = resolveExecutionPrice(record, reservation, quantity);
+        BigDecimal totalCost = resolveTotalCost(record, reservation, quantity, executionPrice, side);
+        Instant executedAt = record.getProcessedAt();
+
+        return new ExecutedOrderResponse(
+                record.getOrderId(),
+                record.getUserId(),
+                ticker,
+                side,
+                quantity,
+                executionPrice,
+                totalCost,
+                executedAt
+        );
+    }
+
+    private ProcessedExecutionRecord buildProcessedExecutionRecord(OrderExecutedEvent event, Long userId, Instant processedAt) {
+        return new ProcessedExecutionRecord(
+                event.orderId(),
+                userId,
+                normalizeTicker(event.ticker()),
+                event.side() == null ? null : event.side().trim().toUpperCase(Locale.ROOT),
+                event.quantity() == null ? null : event.quantity().setScale(MONEY_SCALE, RoundingMode.HALF_UP),
+                event.executionPrice() == null ? null : event.executionPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP),
+                event.totalCost() == null ? null : event.totalCost().setScale(MONEY_SCALE, RoundingMode.HALF_UP),
+                event.reservedAmount() == null ? null : event.reservedAmount().setScale(MONEY_SCALE, RoundingMode.HALF_UP),
+                processedAt
+        );
+    }
+
+    private BigDecimal resolveExecutedQuantity(
+            ProcessedExecutionRecord record,
+            BalanceAuditRecord reservation,
+            String side
+    ) {
+        if (record.getQuantity() != null) {
+            return record.getQuantity();
+        }
+        if (reservation == null) {
+            return BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        if ("SELL".equalsIgnoreCase(side)) {
+            return reservation.getAmount().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        BigDecimal targetPrice = reservation.getTargetPrice();
+        if (targetPrice == null || targetPrice.signum() == 0) {
+            return BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        return reservation.getAmount().divide(targetPrice, MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveExecutionPrice(
+            ProcessedExecutionRecord record,
+            BalanceAuditRecord reservation,
+            BigDecimal quantity
+    ) {
+        if (record.getExecutionPrice() != null) {
+            return record.getExecutionPrice();
+        }
+        if (record.getTotalCost() != null && quantity.signum() > 0) {
+            return record.getTotalCost().divide(quantity, MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        if (reservation != null && reservation.getTargetPrice() != null) {
+            return reservation.getTargetPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveTotalCost(
+            ProcessedExecutionRecord record,
+            BalanceAuditRecord reservation,
+            BigDecimal quantity,
+            BigDecimal executionPrice,
+            String side
+    ) {
+        if (record.getTotalCost() != null) {
+            return record.getTotalCost();
+        }
+        if (record.getReservedAmount() != null && "BUY".equalsIgnoreCase(side)) {
+            return record.getReservedAmount();
+        }
+        if (reservation != null && reservation.getAmount() != null && "BUY".equalsIgnoreCase(side)) {
+            return reservation.getAmount().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        }
+        return executionPrice.multiply(quantity).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    private String firstNonBlank(String primary, String fallback) {
+        if (primary != null && !primary.isBlank()) {
+            return primary;
+        }
+        return fallback == null ? "" : fallback;
     }
 
     private void markReservationExecuted(BalanceAuditRecord reservation, Instant processedAt) {

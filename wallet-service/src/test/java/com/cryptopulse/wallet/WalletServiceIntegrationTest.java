@@ -11,6 +11,7 @@ import com.cryptopulse.wallet.domain.OrderSide;
 import com.cryptopulse.wallet.domain.OrderType;
 import com.cryptopulse.wallet.dto.CreateUserRequest;
 import com.cryptopulse.wallet.dto.CreateUserResponse;
+import com.cryptopulse.wallet.dto.ExecutedOrderResponse;
 import com.cryptopulse.wallet.dto.PendingOrderResponse;
 import com.cryptopulse.wallet.dto.ReserveOrderRequest;
 import com.cryptopulse.wallet.dto.ReserveOrderResponse;
@@ -258,6 +259,46 @@ class WalletServiceIntegrationTest {
         assertThat(walletBalanceRepository.findByUser_IdAndCurrency(user.userId(), "USD"))
                 .hasValueSatisfying(balance ->
                         assertThat(balance.getAvailableAmount()).isEqualByComparingTo("10450.00000000"));
+    }
+
+    @Test
+    void shouldExposeExecutionHistoryFromWalletService() {
+        when(kafkaTemplate.send(eq("user-events-test"), anyString(), anyString()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(kafkaTemplate.send(eq("wallet-events-test"), anyString(), anyString()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        CreateUserResponse user = walletService.registerUser(new CreateUserRequest("ivy", "ivy@example.com"));
+
+        walletService.reserveBalance(new ReserveOrderRequest(
+                user.userId(),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.LIMIT,
+                new BigDecimal("50000.00"),
+                new BigDecimal("0.10")
+        ));
+
+        walletService.acceptOrderExecuted(new OrderExecutedEvent(
+                "history-fill-1",
+                user.userId().toString(),
+                "BTCUSDT",
+                "BUY",
+                new BigDecimal("0.10000000"),
+                new BigDecimal("49999.99"),
+                new BigDecimal("4999.99900000"),
+                new BigDecimal("5000.00000000"),
+                System.currentTimeMillis()
+        ));
+
+        java.util.List<ExecutedOrderResponse> history = walletService.getExecutionHistory(user.userId());
+
+        assertThat(history).hasSize(1);
+        ExecutedOrderResponse execution = history.getFirst();
+        assertThat(execution.ticker()).isEqualTo("BTCUSDT");
+        assertThat(execution.side()).isEqualTo("BUY");
+        assertThat(execution.quantity()).isEqualByComparingTo("0.10000000");
+        assertThat(execution.executionPrice()).isEqualByComparingTo("49999.99000000");
+        assertThat(execution.totalCost()).isEqualByComparingTo("4999.99900000");
     }
 
     @Test

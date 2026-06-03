@@ -140,6 +140,7 @@ function App() {
   const [selectedTimeframe, setSelectedTimeframe] = useState("1d");
   const [portfolio, setPortfolio] = useState(null);
   const [walletSnapshot, setWalletSnapshot] = useState(null);
+  const [executionHistory, setExecutionHistory] = useState([]);
   const [marketSnapshot, setMarketSnapshot] = useState(null);
   const [marketChart, setMarketChart] = useState(null);
   const [gatewayStatus, setGatewayStatus] = useState("checking");
@@ -160,6 +161,26 @@ function App() {
   async function loadWalletSnapshot(userId) {
     const response = await apiClient.get(`/api/v1/wallet/users/${userId}/snapshot`);
     startTransition(() => setWalletSnapshot(response.data));
+  }
+
+  async function loadWalletPanel(userId) {
+    const [snapshotResult, executionsResult] = await Promise.allSettled([
+      apiClient.get(`/api/v1/wallet/users/${userId}/snapshot`),
+      apiClient.get(`/api/v1/wallet/users/${userId}/executions`)
+    ]);
+
+    if (snapshotResult.status !== "fulfilled") {
+      throw snapshotResult.reason;
+    }
+
+    startTransition(() => {
+      setWalletSnapshot(snapshotResult.value.data);
+      setExecutionHistory(
+        executionsResult.status === "fulfilled"
+          ? executionsResult.value.data
+          : []
+      );
+    });
   }
 
   async function loadMarketUniverse() {
@@ -338,11 +359,13 @@ function App() {
     if (!activeUserId) {
       setPortfolio(null);
       setWalletSnapshot(null);
+      setExecutionHistory([]);
       return undefined;
     }
 
     setPortfolio(null);
     setWalletSnapshot(null);
+    setExecutionHistory([]);
 
     const syncPortfolio = async () => {
       try {
@@ -379,12 +402,13 @@ function App() {
 
     if (!activeUserId) {
       setWalletSnapshot(null);
+      setExecutionHistory([]);
       return undefined;
     }
 
     const syncWalletSnapshot = async () => {
       try {
-        await loadWalletSnapshot(activeUserId);
+        await loadWalletPanel(activeUserId);
       } catch (error) {
         if (!isActive) {
           return;
@@ -411,7 +435,7 @@ function App() {
     onPortfolio: (nextPortfolio) => {
       startTransition(() => setPortfolio(nextPortfolio));
       if (activeUserId) {
-        void loadWalletSnapshot(activeUserId);
+        void loadWalletPanel(activeUserId);
       }
       setFeedback("Portfolio updated from live stream.");
     },
@@ -451,7 +475,7 @@ function App() {
       setUserIdInput(nextUserId);
       setRegisterForm(initialRegisterForm);
       setLastReservation(null);
-      await loadWalletSnapshot(nextUserId);
+      await loadWalletPanel(nextUserId);
       setFeedback(`User created. Live desk attached to user ${nextUserId}. Waiting for analytics to project the portfolio...`);
     } catch (error) {
       setFeedback(error.response?.data?.message ?? "User registration failed.");
@@ -475,9 +499,10 @@ function App() {
       await apiClient.get(`/api/v1/wallet/users/${nextUserId}`);
       setPortfolio(null);
       setWalletSnapshot(null);
+      setExecutionHistory([]);
       setLastReservation(null);
       setActiveUserId(nextUserId);
-      await loadWalletSnapshot(nextUserId);
+      await loadWalletPanel(nextUserId);
       setFeedback(`Listening to portfolio ${nextUserId}.`);
     } catch (error) {
       setFeedback(error.response?.data?.message ?? "We could not find that user.");
@@ -507,11 +532,11 @@ function App() {
       };
       const response = await apiClient.post("/api/v1/wallet/orders/reserve", payload);
       setLastReservation(response.data);
-      await loadWalletSnapshot(activeUserId);
+      await loadWalletPanel(activeUserId);
       await loadPortfolio(activeUserId).catch(() => {});
       setFeedback(`${orderForm.side} order reserved on ${orderForm.targetTicker}. ${getLimitTriggerLabel(orderForm.side, orderForm.targetTicker, orderForm.targetPrice)}`);
     } catch (error) {
-      await loadWalletSnapshot(activeUserId).catch(() => {});
+      await loadWalletPanel(activeUserId).catch(() => {});
       setFeedback(error.response?.data?.message ?? "Order reservation failed. Review the pending orders below.");
     } finally {
       setBusyAction(null);
@@ -531,7 +556,7 @@ function App() {
       if (lastReservation?.eventId === orderId) {
         setLastReservation(null);
       }
-      await loadWalletSnapshot(activeUserId);
+      await loadWalletPanel(activeUserId);
       await loadPortfolio(activeUserId).catch(() => {});
       setFeedback(`Pending order ${orderId} cancelled. Reserved funds are available again.`);
     } catch (error) {
@@ -554,6 +579,7 @@ function App() {
 
   const assetEntries = Object.entries(walletSnapshot?.assetBalances ?? {});
   const pendingOrders = walletSnapshot?.pendingOrders ?? [];
+  const executedOrders = executionHistory.length ? executionHistory : [...(portfolio?.trades ?? [])].reverse();
   const selectedAssetCode = orderForm.targetTicker.endsWith("USDT")
     ? orderForm.targetTicker.slice(0, -4)
     : orderForm.targetTicker;
@@ -929,7 +955,7 @@ function App() {
                         </label>
                         <label className="grid gap-2 text-sm text-stone-300">
                           Limit price
-                          <div className="flex gap-2">
+                          <div className="flex flex-col gap-2 sm:flex-row">
                             <input
                               className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-stone-950/80 px-4 py-3 text-white outline-none transition focus:border-amber-300/40"
                               value={orderForm.targetPrice}
@@ -940,7 +966,7 @@ function App() {
                               type="number"
                             />
                             <button
-                              className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.25em] text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                              className="shrink-0 whitespace-nowrap rounded-2xl border border-amber-300/25 bg-amber-300/10 px-3 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
                               disabled={!marketSnapshot?.latestPrice || isBusy}
                               onClick={applyLivePrice}
                               type="button"
@@ -1096,7 +1122,9 @@ function App() {
                         ))
                       ) : (
                         <div className="rounded-[1.5rem] border border-dashed border-white/15 bg-white/5 p-8 text-center text-sm text-stone-400">
-                          No funds are currently reserved in pending limit orders.
+                          {executedOrders.length
+                            ? "No funds are currently reserved. The most recent limit order was already executed."
+                            : "No funds are currently reserved in pending limit orders."}
                         </div>
                       )}
                     </div>
@@ -1115,8 +1143,8 @@ function App() {
                     </div>
 
                     <div className="mt-6 grid gap-4">
-                      {(portfolio?.trades ?? []).length ? (
-                        [...portfolio.trades].reverse().map((trade) => (
+                      {executedOrders.length ? (
+                        [...executedOrders].map((trade) => (
                           <div key={`${trade.orderId}-${trade.executedAt}`} className="rounded-[1.5rem] border border-white/10 bg-stone-950/70 p-5">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                               <div>
@@ -1142,7 +1170,7 @@ function App() {
                         <div className="rounded-[1.5rem] border border-dashed border-white/15 bg-white/5 p-8 text-center text-sm text-stone-400">
                           {pendingOrders.length
                             ? "No execution yet. The reserved order is still waiting for the market to cross its limit price."
-                            : "No execution has reached the analytics stream yet. Reserve an order and let the market feeder cross it."}
+                            : "No execution registered yet. If the order disappeared from pending, it was probably filled and the wallet history will appear after the next refresh."}
                         </div>
                       )}
                     </div>

@@ -3,6 +3,7 @@ package com.cryptopulse.wallet.controller;
 import com.cryptopulse.wallet.dto.CreateUserRequest;
 import com.cryptopulse.wallet.dto.CreateUserResponse;
 import com.cryptopulse.wallet.dto.CancelOrderResponse;
+import com.cryptopulse.wallet.dto.ExecutedOrderResponse;
 import com.cryptopulse.wallet.dto.PendingOrderResponse;
 import com.cryptopulse.wallet.dto.ReserveOrderRequest;
 import com.cryptopulse.wallet.dto.ReserveOrderResponse;
@@ -49,6 +50,11 @@ public class WalletController {
     @GetMapping("/users/{userId}/orders/pending")
     public List<PendingOrderResponse> getPendingOrders(@PathVariable Long userId) {
         return walletService.getPendingOrders(userId);
+    }
+
+    @GetMapping("/users/{userId}/executions")
+    public List<ExecutedOrderResponse> getExecutionHistory(@PathVariable Long userId) {
+        return walletService.getExecutionHistory(userId);
     }
 
     @GetMapping("/orders/pending")

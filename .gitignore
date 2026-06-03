@@ -1,0 +1,29 @@
+target/
+.idea/
+.vscode/
+.DS_Store
+*.iml
+.mvn/
+node_modules/
+.env
+*.md
+!README.md
+.env.*
+!.env.example
+
+# Local overrides
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output and temp files
+coverage/
+dist/
+build/
+tmp/
+temp/

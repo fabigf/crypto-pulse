@@ -1,0 +1,48 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  threads:
+    virtual:
+      enabled: true
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: wallet-service
+              uri: ${WALLET_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/v1/wallet/**
+            - id: analytics-service-rest
+              uri: ${ANALYTICS_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/v1/analytics/**
+            - id: analytics-service-websocket
+              uri: ${ANALYTICS_WS_SERVICE_URL:ws://localhost:8082}
+              predicates:
+                - Path=/ws-market,/ws-market/**
+            - id: market-feeder-service
+              uri: ${MARKET_FEEDER_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/v1/market/**
+            - id: order-processor-service
+              uri: ${ORDER_PROCESSOR_SERVICE_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/v1/orders/**
+
+gateway:
+  cors:
+    allowed-origins: ${GATEWAY_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://host.docker.internal:5173,http://host.docker.internal:4173}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+      cors:
+        allowed-origins: "http://localhost:5173,http://127.0.0.1:5173"
+        allowed-methods: "GET,OPTIONS"
+        allowed-headers: "*"

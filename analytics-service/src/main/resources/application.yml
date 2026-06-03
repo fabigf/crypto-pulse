@@ -1,0 +1,38 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: analytics-service
+  threads:
+    virtual:
+      enabled: true
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://cryptopulse:cryptopulse@localhost:27017/analyticsdb?authSource=admin}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: analytics-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+analytics:
+  websocket:
+    allowed-origin-patterns: ${ANALYTICS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*,http://host.docker.internal:*}
+  kafka:
+    user-events-topic: user-events
+    wallet-events-topic: wallet-events
+    order-events-topic: order-events
+    market-prices-topic: market-prices
+  market:
+    supported-tickers: ${MARKET_SYMBOLS:BTCUSDT,ETHUSDT,SOLUSDT,ADAUSDT}
+    binance-base-url: ${BINANCE_BASE_URL:https://api.binance.com}
+    chart-default-limit: ${MARKET_CHART_DEFAULT_LIMIT:120}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

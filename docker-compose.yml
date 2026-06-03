@@ -1,0 +1,172 @@
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  postgres-wallet:
+    image: postgres:16
+    container_name: postgres-wallet
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: walletdb
+      POSTGRES_USER: cryptopulse
+      POSTGRES_PASSWORD: cryptopulse
+    volumes:
+      - postgres-wallet-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptopulse -d walletdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-analytics:
+    image: mongo:7.0
+    container_name: mongodb-analytics
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: cryptopulse
+      MONGO_INITDB_ROOT_PASSWORD: cryptopulse
+    volumes:
+      - mongodb-analytics-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username cryptopulse --password cryptopulse --eval \"db.adminCommand('ping').ok\" admin | grep 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  wallet-service:
+    build:
+      context: .
+      dockerfile: wallet-service/Dockerfile
+    container_name: wallet-service
+    depends_on:
+      postgres-wallet:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-wallet:5432/walletdb
+      SPRING_DATASOURCE_USERNAME: cryptopulse
+      SPRING_DATASOURCE_PASSWORD: cryptopulse
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      MARKET_SYMBOLS: ${MARKET_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,ADAUSDT}
+    ports:
+      - "8081:8081"
+
+  market-feeder-service:
+    build:
+      context: .
+      dockerfile: market-feeder-service/Dockerfile
+    container_name: market-feeder-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      BINANCE_BASE_URL: ${BINANCE_BASE_URL:-https://api.binance.com}
+      MARKET_SYMBOLS: ${MARKET_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,ADAUSDT}
+    ports:
+      - "8083:8083"
+
+  order-processor-service:
+    build:
+      context: .
+      dockerfile: order-processor-service/Dockerfile
+    container_name: order-processor-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      WALLET_SERVICE_URL: http://wallet-service:8081
+    ports:
+      - "8084:8084"
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: analytics-service/Dockerfile
+    container_name: analytics-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb-analytics:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_MONGODB_URI: mongodb://cryptopulse:cryptopulse@mongodb-analytics:27017/analyticsdb?authSource=admin
+      BINANCE_BASE_URL: ${BINANCE_BASE_URL:-https://api.binance.com}
+      ANALYTICS_ALLOWED_ORIGIN_PATTERNS: ${ANALYTICS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://host.docker.internal:*}
+      MARKET_SYMBOLS: ${MARKET_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,ADAUSDT}
+      MARKET_CHART_DEFAULT_LIMIT: ${MARKET_CHART_DEFAULT_LIMIT:-120}
+    ports:
+      - "8082:8082"
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    container_name: api-gateway
+    depends_on:
+      wallet-service:
+        condition: service_started
+      analytics-service:
+        condition: service_started
+      market-feeder-service:
+        condition: service_started
+      order-processor-service:
+        condition: service_started
+    environment:
+      WALLET_SERVICE_URL: http://wallet-service:8081
+      ANALYTICS_SERVICE_URL: http://analytics-service:8082
+      ANALYTICS_WS_SERVICE_URL: ws://analytics-service:8082
+      MARKET_FEEDER_SERVICE_URL: http://market-feeder-service:8083
+      ORDER_PROCESSOR_SERVICE_URL: http://order-processor-service:8084
+    ports:
+      - "8080:8080"
+
+  cryptopulse-ui:
+    build:
+      context: ./cryptopulse-ui
+      dockerfile: Dockerfile
+    container_name: cryptopulse-ui
+    depends_on:
+      api-gateway:
+        condition: service_started
+    ports:
+      - "5173:5173"
+
+volumes:
+  kafka-data:
+  postgres-wallet-data:
+  mongodb-analytics-data:

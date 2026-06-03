@@ -1,0 +1,29 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: market-feeder-service
+  threads:
+    virtual:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+market:
+  binance:
+    base-url: ${BINANCE_BASE_URL:https://api.binance.com}
+    symbols: ${MARKET_SYMBOLS:BTCUSDT,ETHUSDT,SOLUSDT,ADAUSDT}
+  kafka:
+    topic: market-prices
+  poll:
+    fixed-rate-ms: 2000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
